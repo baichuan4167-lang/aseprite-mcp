@@ -77,4 +77,27 @@ function probe(label, options) {
       }, 1500);
     });
   });
+
+  // The harness passes a custom environment. Narrow it down to find out
+  // whether a large inherited environment is what breaks the spawn.
+  const envVariants = [
+    ['full process.env', { ...process.env }],
+    ['PATH only', { PATH: process.env.PATH }],
+    ['PATH + HOME', { PATH: process.env.PATH, HOME: process.env.HOME }],
+    ['PATH + HOME + TMPDIR', { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: os.tmpdir() }],
+  ];
+  for (const [label, env] of envVariants) {
+    // eslint-disable-next-line no-await-in-loop
+    const result = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [SCRIPT], { stdio: 'ignore', env, windowsHide: true });
+      child.on('error', (error) => resolve(`ERROR ${error.code}`));
+      child.on('spawn', () => {
+        setTimeout(() => {
+          child.kill();
+          resolve('spawned');
+        }, 1200);
+      });
+    });
+    process.stdout.write(`server env[${label.padEnd(20)}] ${result}\n`);
+  }
 })();
