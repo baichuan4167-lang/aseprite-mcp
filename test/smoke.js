@@ -33,6 +33,23 @@ async function main() {
     await client.start();
     check('server initializes', client.serverInfo && client.serverInfo.name === 'aseprite', JSON.stringify(client.serverInfo));
 
+    // Fail with instructions rather than a stack trace when Aseprite is absent:
+    // this suite needs a real installation, unlike test/protocol.js.
+    try {
+      Client.json(await client.call('aseprite_status'));
+    } catch (error) {
+      process.stdout.write(
+        '\nThis suite needs a real Aseprite installation.\n' +
+          'Set ASEPRITE_PATH to the Aseprite executable, or install it in a standard\n' +
+          'location, then run it again. For checks that need no Aseprite, use:\n' +
+          '  node test/syntax-check.js\n' +
+          '  node test/protocol.js\n\n' +
+          `Reported: ${error.message.split('\n')[0]}\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
     const tools = await client.listTools();
     const names = tools.tools.map((t) => t.name);
     check('tools/list returns a useful number of tools', names.length >= 35, `got ${names.length}`);
