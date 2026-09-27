@@ -7,9 +7,24 @@
  */
 
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const SERVER = path.join(__dirname, '..', 'src', 'server.js');
+
+/**
+ * Resolve a Node binary to spawn the server with.
+ *
+ * `process.execPath` is normally correct, but it is not guaranteed to be
+ * executable in every environment: GitHub-hosted runners have produced
+ * `spawn .../bin/node ENOENT` even though the reported path is used to run the
+ * test itself. Prefer it when it exists, otherwise fall back to something on
+ * PATH so the suite still runs.
+ */
+function nodeCandidates() {
+  const list = [process.execPath, process.argv[0], 'node'].filter(Boolean);
+  return [...new Set(list)];
+}
 
 class Client {
   constructor(options = {}) {
@@ -20,14 +35,41 @@ class Client {
     this.options = options;
   }
 
-  async start() {
-    this.child = spawn(process.execPath, [SERVER], {
-      cwd: this.options.cwd,
-      env: { ...process.env, ...(this.options.env || {}) },
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
+  /**
+   * Spawn the server, falling back to another Node binary if the first one
+   * cannot be executed. The `error` event is handled here so a failed spawn
+   * surfaces as a rejected promise instead of an unhandled event.
+   */
+  _spawnServer() {
+    const candidates = nodeCandidates();
+    return new Promise((resolve, reject) => {
+      const attempt = (index) => {
+        if (index >= candidates.length) {
+          reject(new Error(`could not spawn a Node binary (tried: ${candidates.join(', ')})`));
+          return;
+        }
+        const child = spawn(candidates[index], [SERVER], {
+          cwd: this.options.cwd,
+          env: { ...process.env, ...(this.options.env || {}) },
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+        child.once('error', (error) => {
+          // ENOENT means this binary is not usable here; try the next one.
+          if (error.code === 'ENOENT' || error.code === 'EACCES') attempt(index + 1);
+          else reject(error);
+        });
+        child.once('spawn', () => {
+          this.child = child;
+          resolve();
+        });
+      };
+      attempt(0);
     });
+  }
 
+  async start() {
+    await this._spawnServer();
     let buffer = '';
     this.child.stdout.on('data', (data) => {
       buffer += data.toString();
