@@ -42,20 +42,30 @@ class Client {
    */
   _spawnServer() {
     const candidates = nodeCandidates();
+    const seen = [];
     return new Promise((resolve, reject) => {
       const attempt = (index) => {
         if (index >= candidates.length) {
-          reject(new Error(`could not spawn a Node binary (tried: ${candidates.join(', ')})`));
+          reject(
+            new Error(
+              `could not spawn the server (tried: ${candidates.join(', ')})\n${seen.join('\n')}`,
+            ),
+          );
           return;
         }
-        const child = spawn(candidates[index], [SERVER], {
+        const command = candidates[index];
+        const child = spawn(command, [SERVER], {
           cwd: this.options.cwd,
           env: { ...process.env, ...(this.options.env || {}) },
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
         });
         child.once('error', (error) => {
-          // ENOENT means this binary is not usable here; try the next one.
+          seen.push(
+            `  ${command}: ${error.code} ${error.syscall || ''} path=${error.path || '?'} ` +
+              `spawnargs=${JSON.stringify(error.spawnargs || [])} cwd=${this.options.cwd || process.cwd()}`,
+          );
+          // A binary that cannot be executed here: try the next candidate.
           if (error.code === 'ENOENT' || error.code === 'EACCES') attempt(index + 1);
           else reject(error);
         });
