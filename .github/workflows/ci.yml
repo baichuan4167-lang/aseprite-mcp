@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Static checks only, so they can run anywhere without Aseprite.
+  check:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Parse every JavaScript file and check for a UTF-8 BOM
+        run: node test/syntax-check.js
+
+      - name: Verify the MCP server starts and lists its tools
+        run: node test/protocol.js
+
+  # The full suite needs a real Aseprite. Hosted runners do not have one, so
+  # this job stays skipped until a self-hosted runner labelled `aseprite` exists.
+  # To run it there, make ASEPRITE_PATH (or a default install location) valid.
+  integration:
+    name: Integration (real Aseprite)
+    runs-on: [self-hosted, aseprite]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Smoke test (85 assertions against a real Aseprite)
+        run: node test/smoke.js
+
+      - name: Draw the demo artwork
+        run: |
+          node test/slime.js
+          node test/demo-art.js

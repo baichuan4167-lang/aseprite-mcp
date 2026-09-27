@@ -1,0 +1,11 @@
+# Generated artwork and exports from the demo / agent runs
+art/
+out/
+.aseprite-mcp/
+
+# Dependencies (this project is zero-dependency by design)
+node_modules/
+
+# Logs and transient files
+*.log
+npm-debug.log*

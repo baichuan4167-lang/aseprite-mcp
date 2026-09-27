@@ -1,0 +1,51 @@
+{
+  "name": "aseprite-mcp",
+  "version": "1.0.0",
+  "description": "Model Context Protocol server that lets an AI agent draw pixel art and animations in Aseprite — sprites, layers, frames, tags, palettes, and GIF/sprite-sheet exports — by driving Aseprite headlessly.",
+  "main": "src/server.js",
+  "bin": {
+    "aseprite-mcp": "src/server.js"
+  },
+  "files": [
+    "src/",
+    "docs/images/",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "THIRD-PARTY-NOTICES.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test/smoke.js",
+    "check": "node test/syntax-check.js",
+    "demo": "node test/demo-art.js",
+    "demo:slime": "node test/slime.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "aseprite",
+    "pixel-art",
+    "sprite",
+    "animation",
+    "gamedev",
+    "ai-agent",
+    "pixel-editor"
+  ],
+  "license": "MIT",
+  "author": "baichuan4167-lang",
+  "homepage": "https://github.com/baichuan4167-lang/aseprite-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baichuan4167-lang/aseprite-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/baichuan4167-lang/aseprite-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
