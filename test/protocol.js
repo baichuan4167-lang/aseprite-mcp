@@ -7,6 +7,10 @@
  * well-formed tool catalog even when Aseprite cannot be found — the tools fail
  * at call time with a clear message, they do not disappear.
  *
+ * This drives `src/server.js` in-process rather than spawning it, so it runs
+ * anywhere, including CI sandboxes that refuse to spawn a piped child. The
+ * spawned path is covered by test/smoke.js, which needs a real Aseprite anyway.
+ *
  * Run: node test/protocol.js
  */
 
@@ -52,21 +56,17 @@ const REQUIRED_TOOLS = [
 ];
 
 (async () => {
-  // Point the server at an empty workspace and an intentionally bogus Aseprite
-  // path, so this runs on a machine that has neither.
+  // An empty workspace and a deliberately bogus Aseprite path, so this runs on
+  // a machine that has neither.
   const workspace = path.join(os.tmpdir(), 'aseprite-mcp-protocol');
-  const client = new Client({
-    cwd: workspace,
-    env: {
-      // The harness merges this over process.env; ASEPRITE_PATH is deliberately
-      // bogus so this runs on a machine that has no Aseprite at all.
-      ASEPRITE_PATH: path.join(workspace, 'definitely-not-aseprite.exe'),
-      ASEPRITE_MCP_WORKSPACE: workspace,
-    },
-  });
+  process.env.ASEPRITE_PATH = path.join(workspace, 'definitely-not-aseprite.exe');
+  process.env.ASEPRITE_MCP_WORKSPACE = workspace;
+
+  const client = new Client({ cwd: workspace });
 
   try {
-    await client.start();
+    await client.startInProcess();
+    await client._handshake();
     check(
       client.serverInfo && client.serverInfo.name === 'aseprite',
       'server completes the MCP handshake',
@@ -102,12 +102,7 @@ const REQUIRED_TOOLS = [
       .map((t) => t.name);
     check(noProperties.length === 0, 'every input schema declares its properties', noProperties.join(', '));
 
-    // Every tool that claims a required property should be able to fail cleanly
-    // rather than crashing the server.
-    check(
-      JSON.stringify(await client.request('ping', {})) === '{}',
-      'ping is answered',
-    );
+    check(JSON.stringify(await client.request('ping', {})) === '{}', 'ping is answered');
 
     const unknown = await client
       .request('tools/call', { name: 'aseprite_no_such_tool', arguments: {} })

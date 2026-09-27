@@ -36,6 +36,135 @@ class Client {
   }
 
   /**
+   * Run the server with no child process at all.
+   *
+   * A spawned stdio server is the more faithful test, but some CI sandboxes
+   * refuse to spawn a piped child (`spawn <node> ENOENT` on a binary that
+   * plainly exists). This mode loads the very same `src/server.js` and captures
+   * the `readline` interface it creates for stdin, so the handshake and the
+   * whole tool catalogue are still verified end to end — just in one process.
+   */
+  startInProcess() {
+    const Module = require('node:module');
+    const realWrite = process.stdout.write;
+
+    // Capture the server's replies, which are newline-delimited JSON on stdout.
+    // Anything that is NOT a JSON-RPC message is passed through, so the test's
+    // own output stays visible.
+    const patchedWrite = (chunk, ...rest) => {
+      const text = String(chunk);
+      const trimmed = text.trim();
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+          const message = JSON.parse(trimmed);
+          if (message && message.jsonrpc === '2.0') {
+            this._consume(text);
+            const callback = rest[rest.length - 1];
+            if (typeof callback === 'function') callback();
+            return true;
+          }
+        } catch {
+          /* fall through and pass it on */
+        }
+      }
+      return realWrite.call(process.stdout, chunk, ...rest);
+    };
+    this._savedWrite = patchedWrite;
+    process.stdout.write = patchedWrite;
+
+    this.inProcess = true;
+    this._input = null;
+
+    // Intercept module loading rather than patching the readline module object.
+    // swc-compiled builds can hand out a distinct object per require, so
+    // assigning to `readline.createInterface` is not reliable — that mistake
+    // cost an afternoon already.
+    const realLoad = Module._load;
+    const self = this;
+    Module._load = function intercepted(request, parent, isMain) {
+      // Do NOT load the real readline module first: its createInterface would
+      // bind the genuine process.stdin and steal `_input` from the stub.
+      if (request === 'node:readline' || request === 'readline') {
+        return {
+          createInterface() {
+            const iface = {
+              handlers: {},
+              on(event, handler) {
+                this.handlers[event] = handler;
+                return this;
+              },
+              close() {},
+            };
+            self._input = iface;
+            return iface;
+          },
+        };
+      }
+      return realLoad.apply(this, arguments);
+    };
+    try {
+      require(SERVER);
+    } finally {
+      Module._load = realLoad;
+    }
+
+    // The server attaches to stdin from an async main(), and registers its
+    // request handler immediately after. Wait for both before sending anything.
+    return new Promise((resolve, reject) => {
+      const deadline = Date.now() + 10000;
+      const ready = () => this._input && this._input.handlers && this._input.handlers.line;
+      const poll = () => {
+        if (ready()) {
+          resolve();
+          return;
+        }
+        if (Date.now() > deadline) {
+          reject(
+            new Error(
+              this._input
+                ? 'src/server.js attached to stdin but never registered a request handler'
+                : 'src/server.js never attached to stdin; the in-process driver cannot start',
+            ),
+          );
+          return;
+        }
+        setTimeout(poll, 20);
+      };
+      poll();
+    });
+  }
+
+  /** Send one JSON-RPC message, to the child process or the in-process server. */
+  _send(message) {
+    const line = JSON.stringify(message);
+    if (this.inProcess) {
+      const handler = this._input && this._input.handlers && this._input.handlers.line;
+      if (!handler) throw new Error('the in-process server has no stdin line handler');
+      handler(line);
+      return;
+    }
+    this.child.stdin.write(`${line}\n`);
+  }
+
+  /** Handle anything the server writes (possibly several lines at once). */
+  _consume(chunk) {
+    const line = chunk.trim();
+    if (!line) return;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (message.id !== undefined && this.pending.has(message.id)) {
+      const { resolve, reject } = this.pending.get(message.id);
+      this.pending.delete(message.id);
+      if (message.error) reject(new Error(message.error.message));
+      else resolve(message.result);
+    }
+  }
+
+  /**
    * Spawn the server, falling back to another Node binary if the first one
    * cannot be executed. The `error` event is handled here so a failed spawn
    * surfaces as a rejected promise instead of an unhandled event.
@@ -78,6 +207,19 @@ class Client {
     });
   }
 
+  /** Finish the MCP handshake. Shared by both transport modes. */
+  async _handshake() {
+    const init = await this.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'aseprite-mcp-test', version: '1.0.0' },
+    });
+    this.notify('notifications/initialized', {});
+    this.serverInfo = init.serverInfo;
+    this.capabilities = init.capabilities;
+    return init;
+  }
+
   async start() {
     await this._spawnServer();
     let buffer = '';
@@ -85,21 +227,8 @@ class Client {
       buffer += data.toString();
       let index;
       while ((index = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, index).trim();
+        this._consume(buffer.slice(0, index));
         buffer = buffer.slice(index + 1);
-        if (!line) continue;
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (message.id !== undefined && this.pending.has(message.id)) {
-          const { resolve, reject } = this.pending.get(message.id);
-          this.pending.delete(message.id);
-          if (message.error) reject(new Error(message.error.message));
-          else resolve(message.result);
-        }
       }
     });
 
@@ -114,15 +243,7 @@ class Client {
       this.pending.clear();
     });
 
-    const init = await this.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'aseprite-mcp-test', version: '1.0.0' },
-    });
-    this.notify('notifications/initialized', {});
-    this.serverInfo = init.serverInfo;
-    this.capabilities = init.capabilities;
-    return init;
+    return this._handshake();
   }
 
   request(method, params) {
@@ -130,7 +251,7 @@ class Client {
     const payload = { jsonrpc: '2.0', id, method, params };
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.child.stdin.write(`${JSON.stringify(payload)}\n`);
+      this._send(payload);
       setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
@@ -141,7 +262,7 @@ class Client {
   }
 
   notify(method, params) {
-    this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
+    this._send({ jsonrpc: '2.0', method, params });
   }
 
   listTools() {
@@ -188,6 +309,10 @@ class Client {
   }
 
   async stop() {
+    if (this.inProcess) {
+      if (this._savedWrite) process.stdout.write = this._savedWrite;
+      return;
+    }
     if (!this.child) return;
     this.child.stdin.end();
     await new Promise((resolve) => {
