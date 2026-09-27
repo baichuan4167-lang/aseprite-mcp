@@ -21,6 +21,9 @@ jobs:
       - name: Parse every JavaScript file and check for a UTF-8 BOM
         run: node test/syntax-check.js
 
+      - name: Diagnose child-process spawning
+        run: node test/spawn-diagnostic.js
+
       - name: Verify the MCP server starts and lists its tools
         run: node test/protocol.js
 
